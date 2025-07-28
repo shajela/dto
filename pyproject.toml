@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dto"
+version = "0.1.0"
+description = "Distributed Training Orchestrator"
+dependencies = [
+    "torch>=2.0.0",
+    "torchvision>=0.10.0",
+    "numpy>=1.21.0",
+    "scikit-learn>=1.1.0",
+    "horovod[pytorch]>=0.25.0",
+    "nvidia-ml-py3>=7.352.0",
+    "psutil>=5.8.0",
+]
+requires-python = ">=3.8"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["dto*"]
