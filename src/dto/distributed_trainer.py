@@ -16,9 +16,9 @@ to provide their own training logic. The framework automatically handles:
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, TensorDataset, Dataset
 import horovod.torch as hvd
-from typing import Callable, Optional, Any, Dict
+from typing import Callable, Optional, Any, Dict, Union, Tuple
 import logging
 import os
 import json
@@ -26,6 +26,11 @@ import glob
 from datetime import datetime
 import boto3
 from botocore.exceptions import ClientError, NoCredentialsError
+import pandas as pd
+import numpy as np
+import pickle
+from pathlib import Path
+import tempfile
 
 
 class DistributedTrainer:
@@ -35,24 +40,24 @@ class DistributedTrainer:
     """
     
     def __init__(self, 
+                 s3_bucket_arn: str,
                  auto_scale_lr: bool = True,
                  auto_scale_batch_size: bool = False,
                  verbose: bool = True,
                  checkpoint_interval: int = 10,
                  keep_last_n_checkpoints: int = 3,
-                 save_best_only: bool = False,
-                 s3_bucket_arn: Optional[str] = None):
+                 save_best_only: bool = False):
         """
         Initialize the distributed trainer.
         
         Args:
+            s3_bucket_arn: S3 bucket ARN for checkpoints and training data (required)
             auto_scale_lr: Whether to automatically scale learning rate by world size
             auto_scale_batch_size: Whether to scale batch size by world size
             verbose: Whether to print progress information
             checkpoint_interval: Save checkpoint every N epochs (0 to disable)
             keep_last_n_checkpoints: Number of recent checkpoints to keep (0 to keep all)
             save_best_only: Only save checkpoint if validation metric improves
-            s3_bucket_arn: S3 bucket ARN for checkpoint backup (optional)
         """
         # Initialize Horovod
         hvd.init()
@@ -77,13 +82,12 @@ class DistributedTrainer:
         self.save_best_only = save_best_only
         self.best_metric = float('inf')  # Assumes lower is better (loss)
         self.checkpoint_dir = self._setup_checkpoint_dir()
-        
+
         # S3 configuration
         self.s3_bucket_arn = s3_bucket_arn
         self.s3_client = None
         self.s3_bucket_name = None
-        if s3_bucket_arn:
-            self._setup_s3_client()
+        self._setup_s3_client()
         
         # Setup logging (only on rank 0)
         self.logger = self._setup_logging()
@@ -91,11 +95,11 @@ class DistributedTrainer:
         if self.is_master():
             self.log(f"Initialized distributed training on {self.size} processes")
             self.log(f"Using device: {self.device}")
+            self.log(f"S3 bucket: {self.s3_bucket_name}")
             if self.checkpoint_interval > 0:
                 self.log(f"Checkpointing enabled: every {self.checkpoint_interval} epochs")
                 self.log(f"Checkpoint directory: {self.checkpoint_dir}")
-                if self.s3_bucket_arn:
-                    self.log(f"S3 backup enabled: {self.s3_bucket_name}")
+                self.log(f"S3 backup enabled for checkpoints")
     
     def _setup_s3_client(self):
         """Setup S3 client and extract bucket name from ARN"""
@@ -115,16 +119,13 @@ class DistributedTrainer:
                 self.log(f"S3 access verified for bucket: {self.s3_bucket_name}")
                 
         except (ClientError, NoCredentialsError) as e:
-            self.log(f"Warning: S3 setup failed: {e}")
-            self.log("S3 backup will be disabled")
-            self.s3_client = None
-            self.s3_bucket_name = None
-            self.s3_bucket_arn = None
+            error_msg = f"Failed to setup S3 client: {e}. S3 bucket ARN is required for all training data and checkpoints."
+            self.log(f"ERROR: {error_msg}")
+            raise RuntimeError(error_msg)
         except Exception as e:
-            self.log(f"Warning: Unexpected S3 setup error: {e}")
-            self.s3_client = None
-            self.s3_bucket_name = None
-            self.s3_bucket_arn = None
+            error_msg = f"Unexpected S3 setup error: {e}. S3 bucket ARN is required for all training data and checkpoints."
+            self.log(f"ERROR: {error_msg}")
+            raise RuntimeError(error_msg)
     
     def _setup_checkpoint_dir(self) -> str:
         """Setup checkpoint directory with timestamp"""
@@ -135,6 +136,215 @@ class DistributedTrainer:
             os.makedirs(checkpoint_dir, exist_ok=True)
         
         return checkpoint_dir
+    
+    def _load_dataset_from_s3(self, dataloader: DataLoader) -> Dataset:
+        """
+        Load dataset from S3 supporting multiple formats.
+        
+        Args:
+            dataloader: Original dataloader (used for batch_size and other configs)
+            
+        Returns:
+            Dataset: Loaded dataset ready for distributed training
+        """
+        if not self.s3_client or not self.s3_bucket_name:
+            raise ValueError("S3 client not configured for remote data loading")
+        
+        s3_path = dataloader.dataset.s3_path
+        self.log(f"Loading dataset from S3: {s3_path}")
+        
+        # Create temporary directory for downloading data
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = os.path.join(temp_dir, "data")
+            
+            # Download data from S3
+            try:
+                self.s3_client.download_file(self.s3_bucket_name, s3_path, temp_path)
+                self.log(f"Downloaded data from s3://{self.s3_bucket_name}/{s3_path}")
+            except ClientError as e:
+                raise RuntimeError(f"Failed to download data from S3: {e}")
+            
+            # Check if dataset has custom loading method (for CustomDataset subclasses)
+            if hasattr(dataloader.dataset, 'load_from_s3'):
+                self.log("Using custom dataset loading method")
+                dataloader.dataset.load_from_s3(temp_path)
+                return dataloader.dataset._data
+            else:
+                # Load data based on file extension for S3Dataset
+                return self._create_dataset_from_file(temp_path, dataloader.dataset)
+    
+    def _create_dataset_from_file(self, file_path: str, original_dataset: Dataset) -> Dataset:
+        """
+        Create a PyTorch Dataset from various file formats.
+        
+        Args:
+            file_path: Path to the downloaded data file
+            original_dataset: Original dataset object (may contain metadata)
+            
+        Returns:
+            Dataset: PyTorch dataset ready for training
+        """
+        file_ext = Path(file_path).suffix.lower()
+        
+        try:
+            if file_ext in ['.csv', '.tsv']:
+                return self._load_csv_dataset(file_path, original_dataset)
+            elif file_ext in ['.pkl', '.pickle']:
+                return self._load_pickle_dataset(file_path, original_dataset)
+            elif file_ext in ['.pt', '.pth']:
+                return self._load_torch_dataset(file_path, original_dataset)
+            elif file_ext in ['.npy', '.npz']:
+                return self._load_numpy_dataset(file_path, original_dataset)
+            elif file_ext in ['.parquet']:
+                return self._load_parquet_dataset(file_path, original_dataset)
+            elif file_ext in ['.h5', '.hdf5']:
+                return self._load_hdf5_dataset(file_path, original_dataset)
+            else:
+                raise ValueError(f"Unsupported file format: {file_ext}")
+                
+        except Exception as e:
+            self.log(f"Error loading dataset from {file_path}: {e}")
+            raise RuntimeError(f"Failed to load dataset: {e}")
+    
+    def _load_csv_dataset(self, file_path: str, original_dataset: Dataset) -> Dataset:
+        """Load dataset from CSV/TSV file."""
+        # Check if original dataset has column specifications
+        target_col = getattr(original_dataset, 'target_column', 'target')
+        feature_cols = getattr(original_dataset, 'feature_columns', None)
+        
+        # Load CSV
+        df = pd.read_csv(file_path)
+        self.log(f"Loaded CSV with shape: {df.shape}")
+        
+        # Split features and targets
+        if target_col in df.columns:
+            y = torch.tensor(df[target_col].values, dtype=torch.long)
+            if feature_cols:
+                X = torch.tensor(df[feature_cols].values, dtype=torch.float32)
+            else:
+                # Use all columns except target
+                feature_cols = [col for col in df.columns if col != target_col]
+                X = torch.tensor(df[feature_cols].values, dtype=torch.float32)
+        else:
+            # Assume last column is target
+            X = torch.tensor(df.iloc[:, :-1].values, dtype=torch.float32)
+            y = torch.tensor(df.iloc[:, -1].values, dtype=torch.long)
+        
+        return TensorDataset(X, y)
+    
+    def _load_pickle_dataset(self, file_path: str, original_dataset: Dataset) -> Dataset:
+        """Load dataset from pickle file."""
+        with open(file_path, 'rb') as f:
+            data = pickle.load(f)
+        
+        self.log(f"Loaded pickle data with type: {type(data)}")
+        
+        if isinstance(data, dict):
+            # Expect {'X': features, 'y': targets} format
+            X = torch.tensor(data['X'], dtype=torch.float32)
+            y = torch.tensor(data['y'], dtype=torch.long)
+            return TensorDataset(X, y)
+        elif isinstance(data, (list, tuple)) and len(data) == 2:
+            # Expect (features, targets) format
+            X = torch.tensor(data[0], dtype=torch.float32)
+            y = torch.tensor(data[1], dtype=torch.long)
+            return TensorDataset(X, y)
+        elif hasattr(data, '__getitem__') and hasattr(data, '__len__'):
+            # Already a dataset-like object
+            return data
+        else:
+            raise ValueError(f"Unsupported pickle data format: {type(data)}")
+    
+    def _load_torch_dataset(self, file_path: str, original_dataset: Dataset) -> Dataset:
+        """Load dataset from PyTorch file."""
+        data = torch.load(file_path, map_location='cpu')
+        
+        if isinstance(data, dict):
+            if 'dataset' in data:
+                return data['dataset']
+            elif 'X' in data and 'y' in data:
+                return TensorDataset(data['X'], data['y'])
+            else:
+                # Try to find tensor pairs
+                tensors = [v for v in data.values() if isinstance(v, torch.Tensor)]
+                if len(tensors) == 2:
+                    return TensorDataset(tensors[0], tensors[1])
+        elif isinstance(data, Dataset):
+            return data
+        elif isinstance(data, (list, tuple)) and len(data) == 2:
+            X = data[0] if isinstance(data[0], torch.Tensor) else torch.tensor(data[0])
+            y = data[1] if isinstance(data[1], torch.Tensor) else torch.tensor(data[1])
+            return TensorDataset(X, y)
+        
+        raise ValueError(f"Unsupported PyTorch data format: {type(data)}")
+    
+    def _load_numpy_dataset(self, file_path: str, original_dataset: Dataset) -> Dataset:
+        """Load dataset from NumPy file."""
+        if file_path.endswith('.npz'):
+            data = np.load(file_path)
+            # Expect 'X' and 'y' keys, or 'features' and 'labels'
+            if 'X' in data and 'y' in data:
+                X = torch.tensor(data['X'], dtype=torch.float32)
+                y = torch.tensor(data['y'], dtype=torch.long)
+            elif 'features' in data and 'labels' in data:
+                X = torch.tensor(data['features'], dtype=torch.float32)
+                y = torch.tensor(data['labels'], dtype=torch.long)
+            else:
+                # Take first two arrays
+                arrays = list(data.values())
+                if len(arrays) >= 2:
+                    X = torch.tensor(arrays[0], dtype=torch.float32)
+                    y = torch.tensor(arrays[1], dtype=torch.long)
+                else:
+                    raise ValueError("NPZ file must contain at least 2 arrays")
+        else:
+            # Single .npy file - assume it contains both features and targets
+            data = np.load(file_path)
+            if data.ndim == 2 and data.shape[1] > 1:
+                # Split features (all but last) and targets (last column)
+                X = torch.tensor(data[:, :-1], dtype=torch.float32)
+                y = torch.tensor(data[:, -1], dtype=torch.long)
+            else:
+                raise ValueError("Single NPY file must be 2D with multiple columns")
+        
+        return TensorDataset(X, y)
+    
+    def _load_parquet_dataset(self, file_path: str, original_dataset: Dataset) -> Dataset:
+        """Load dataset from Parquet file."""
+        df = pd.read_parquet(file_path)
+        self.log(f"Loaded Parquet with shape: {df.shape}")
+        
+        # Use same logic as CSV
+        return self._load_csv_dataset(file_path, original_dataset)
+    
+    def _load_hdf5_dataset(self, file_path: str, original_dataset: Dataset) -> Dataset:
+        """Load dataset from HDF5 file."""
+        try:
+            import h5py
+        except ImportError:
+            raise ImportError("h5py required for HDF5 support. Install with: pip install h5py")
+        
+        with h5py.File(file_path, 'r') as f:
+            # Common HDF5 dataset names
+            if 'X' in f and 'y' in f:
+                X = torch.tensor(f['X'][:], dtype=torch.float32)
+                y = torch.tensor(f['y'][:], dtype=torch.long)
+            elif 'features' in f and 'labels' in f:
+                X = torch.tensor(f['features'][:], dtype=torch.float32)
+                y = torch.tensor(f['labels'][:], dtype=torch.long)
+            elif 'data' in f and 'target' in f:
+                X = torch.tensor(f['data'][:], dtype=torch.float32)
+                y = torch.tensor(f['target'][:], dtype=torch.long)
+            else:
+                # Take first two datasets
+                keys = list(f.keys())
+                if len(keys) >= 2:
+                    X = torch.tensor(f[keys[0]][:], dtype=torch.float32)
+                    y = torch.tensor(f[keys[1]][:], dtype=torch.long)
+                else:
+                    raise ValueError("HDF5 file must contain at least 2 datasets")
+        
+        return TensorDataset(X, y)
     
     def _setup_logging(self) -> logging.Logger:
         """Setup logging that only outputs on rank 0"""
@@ -201,9 +411,12 @@ class DistributedTrainer:
         """
         Prepare dataloader for distributed training.
         Creates distributed sampler to ensure each worker sees different data.
+        All training data is loaded from S3.
         """
-        dataset = dataloader.dataset
-        
+        # Load training data from S3
+        self.log("Loading training data from S3")
+        dataset = self._load_dataset_from_s3(dataloader)
+
         # Create distributed sampler
         sampler = torch.utils.data.distributed.DistributedSampler(
             dataset, 
@@ -798,6 +1011,15 @@ class DistributedTrainer:
 
 
 # Convenience function for quick setup
-def create_distributed_trainer(**kwargs) -> DistributedTrainer:
-    """Create and return a DistributedTrainer instance"""
-    return DistributedTrainer(**kwargs)
+def create_distributed_trainer(s3_bucket_arn: str, **kwargs) -> DistributedTrainer:
+    """
+    Create and return a DistributedTrainer instance.
+    
+    Args:
+        s3_bucket_arn: S3 bucket ARN for training data and checkpoints (required)
+        **kwargs: Additional arguments passed to DistributedTrainer
+        
+    Returns:
+        DistributedTrainer instance configured for S3-based training
+    """
+    return DistributedTrainer(s3_bucket_arn=s3_bucket_arn, **kwargs)

@@ -17,7 +17,7 @@ from typing import Dict, Any
 import numpy as np
 from sklearn.datasets import make_classification
 from simple_net import SimpleNet
-from distributed_trainer import DistributedTrainer
+from dto import DistributedTrainer, create_s3_dataset
 
 
 def create_synthetic_data() -> TensorDataset:
@@ -46,14 +46,19 @@ def main_simple() -> None:
     """
     # Create trainer with basic checkpointing
     trainer = DistributedTrainer(
-        auto_scale_lr=True, 
+        s3_bucket_arn="arn:aws:s3:::my-training-checkpoints",  # Your S3 bucket
+        auto_scale_lr=True,
         verbose=True,
         checkpoint_interval=10,  # Save every 10 epochs
         keep_last_n_checkpoints=3  # Keep only last 3 checkpoints
     )
     
-    # Create data
-    dataset = create_synthetic_data()
+    # Mock data
+    dataset = create_s3_dataset(
+        s3_path="training-data/housing_prices.csv",
+        target_column="price_category",
+        feature_columns=["bedrooms", "bathrooms", "sqft", "age", "location_score"]
+    )
     train_loader = DataLoader(dataset, batch_size=32, shuffle=True)
     
     # Create model
@@ -84,15 +89,19 @@ def main_with_s3_backup() -> None:
     """
     # Create trainer with S3 backup (replace with your actual S3 bucket)
     trainer = DistributedTrainer(
+        s3_bucket_arn="arn:aws:s3:::my-training-checkpoints",  # Your S3 bucket
         auto_scale_lr=True,
         verbose=True,
         checkpoint_interval=5,  # More frequent checkpoints for demo
-        keep_last_n_checkpoints=2,
-        s3_bucket_arn="arn:aws:s3:::my-training-checkpoints"  # Your S3 bucket
+        keep_last_n_checkpoints=2
     )
     
-    # Create data and model
-    dataset = create_synthetic_data()
+    # Mock data
+    dataset = create_s3_dataset(
+        s3_path="training-data/housing_prices.csv",
+        target_column="price_category",
+        feature_columns=["bedrooms", "bathrooms", "sqft", "age", "location_score"]
+    )
     train_loader = DataLoader(dataset, batch_size=32, shuffle=True)
     model = SimpleNet(input_size=20, hidden_size=64, num_classes=2)
     optimizer = optim.Adam(model.parameters(), lr=0.001)
@@ -122,6 +131,7 @@ def main_with_resume() -> None:
     """
     # Create trainer
     trainer = DistributedTrainer(
+        s3_bucket_arn="arn:aws:s3:::my-training-checkpoints",  # Your S3 bucket
         auto_scale_lr=True,
         verbose=True,
         checkpoint_interval=5,
@@ -129,7 +139,11 @@ def main_with_resume() -> None:
     )
     
     # Create data and model
-    dataset = create_synthetic_data()
+    dataset = create_s3_dataset(
+        s3_path="training-data/housing_prices.csv",
+        target_column="price_category",
+        feature_columns=["bedrooms", "bathrooms", "sqft", "age", "location_score"]
+    )
     train_loader = DataLoader(dataset, batch_size=32, shuffle=True)
     model = SimpleNet(input_size=20, hidden_size=64, num_classes=2)
     optimizer = optim.Adam(model.parameters(), lr=0.001)
@@ -169,6 +183,7 @@ def main_best_checkpoint_only() -> None:
     Training that only saves the best performing checkpoints
     """
     trainer = DistributedTrainer(
+        s3_bucket_arn="arn:aws:s3:::my-training-checkpoints",  # Your S3 bucket
         auto_scale_lr=True,
         verbose=True,
         checkpoint_interval=5,
@@ -176,8 +191,12 @@ def main_best_checkpoint_only() -> None:
         keep_last_n_checkpoints=0  # Keep all best checkpoints
     )
     
-    # Create data and model
-    dataset = create_synthetic_data()
+    # Mock data
+    dataset = create_s3_dataset(
+        s3_path="training-data/housing_prices.csv",
+        target_column="price_category",
+        feature_columns=["bedrooms", "bathrooms", "sqft", "age", "location_score"]
+    )
     train_loader = DataLoader(dataset, batch_size=32, shuffle=True)
     model = SimpleNet(input_size=20, hidden_size=64, num_classes=2)
     optimizer = optim.Adam(model.parameters(), lr=0.001)
@@ -259,6 +278,7 @@ def main_custom() -> None:
     """
     # Create trainer with enhanced checkpointing
     trainer = DistributedTrainer(
+        s3_bucket_arn="arn:aws:s3:::my-training-checkpoints",  # Your S3 bucket
         auto_scale_lr=True,
         verbose=True,
         checkpoint_interval=8,
@@ -266,8 +286,12 @@ def main_custom() -> None:
         save_best_only=False
     )
     
-    # Create data
-    dataset = create_synthetic_data()
+    # Mock data
+    dataset = create_s3_dataset(
+        s3_path="training-data/housing_prices.csv",
+        target_column="price_category",
+        feature_columns=["bedrooms", "bathrooms", "sqft", "age", "location_score"]
+    )
     train_loader = DataLoader(dataset, batch_size=32, shuffle=True)
     
     # Create model
@@ -299,12 +323,17 @@ def manual_checkpoint_example() -> None:
     Example of manual checkpoint management
     """
     trainer = DistributedTrainer(
+        s3_bucket_arn="arn:aws:s3:::my-training-checkpoints",  # Your S3 bucket
         checkpoint_interval=0,  # Disable automatic checkpointing
         verbose=True
     )
     
-    # Create data and model
-    dataset = create_synthetic_data()
+    # Mock data
+    dataset = create_s3_dataset(
+        s3_path="training-data/housing_prices.csv",
+        target_column="price_category",
+        feature_columns=["bedrooms", "bathrooms", "sqft", "age", "location_score"]
+    )
     train_loader = DataLoader(dataset, batch_size=32, shuffle=True)
     model = SimpleNet(input_size=20, hidden_size=64, num_classes=2)
     optimizer = optim.Adam(model.parameters(), lr=0.001)
