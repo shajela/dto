@@ -47,16 +47,21 @@ cluster-setup.sh [ARGS]
 ```
 dto/
 ├── src/dto/
-│   └── distributed_trainer.py    # Core training framework
-├── src/examples/
-│   ├── framework_example.py      # Comprehensive usage examples
-│   └── simple_net.py            # Basic neural network example
-├── terraform/
+│   ├── __init__.py              # Package exports
+│   ├── distributed_trainer.py   # Core training framework
+│   └── dataset_utils.py         # S3 dataset utilities and multi-format support
+├── src/examples/                # Usage examples and demonstrations
+│   ├── framework_example.py     # Training examples
+│   ├── data_loading_example.py  # S3 data loading examples (CSV, Pickle, PyTorch, etc.)
+│   └── simple_net.py            # Basic neural network implementation
+├── terraform/                   # Infrastructure as Code
 │   ├── modules/horovod-hpc/     # HPC cluster infrastructure
-│   └── examples/                # Deployment examples
-├── scripts/
-│   └── cluster-setup.sh         # Cluster configuration script
-└── pyproject.toml              # Package configuration
+│   │   └── scripts/             # Cluster setup and configuration scripts
+│   └── examples/                # Deployment configuration examples
+├── .gitignore                   # Git ignore patterns
+├── disttrain.png                # Architecture diagram
+├── pyproject.toml               # Python package configuration
+└── README.md                    # This file
 ```
 
 ## Support
