@@ -502,19 +502,6 @@ resource "aws_instance" "hpc_nodes" {
     Role      = count.index == 0 ? "master" : "worker"
     NodeIndex = count.index
   })
-
-  # Wait for instance to be ready before proceeding
-  provisioner "remote-exec" {
-    inline = ["cloud-init status --wait"]
-
-    connection {
-      type        = "ssh"
-      user        = "ubuntu"
-      private_key = var.create_ssh_key ? tls_private_key.cluster_key[0].private_key_pem : file(var.existing_private_key_path)
-      host        = self.public_ip != "" ? self.public_ip : self.private_ip
-      timeout     = "10m"
-    }
-  }
 }
 
 # EFA Network Interfaces (attached after instance creation when EFA is enabled)
