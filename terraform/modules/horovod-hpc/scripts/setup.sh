@@ -21,7 +21,7 @@ SETUP_SSH_KEYS="${setup_ssh_keys}"
 
 # Logging function
 log() {
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a /var/log/hpc-setup.log
+    echo "[$(date "+%Y-%m-%d %H:%M:%S")] $1" | tee -a /var/log/hpc-setup.log
 }
 
 log "Starting HPC cluster setup for instance in cluster: $CLUSTER_NAME"
@@ -80,16 +80,16 @@ if [[ "$INSTANCE_TYPE" == g* ]] || [[ "$INSTANCE_TYPE" == p* ]]; then
     wget https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2004/x86_64/cuda-keyring_1.0-1_all.deb
     dpkg -i cuda-keyring_1.0-1_all.deb
     apt-get update -y
-    apt-get install -y cuda-toolkit-${CUDA_VERSION//./-}
+    apt-get install -y cuda-toolkit-$${CUDA_VERSION//./-}
     
     # Add CUDA to PATH
-    echo 'export PATH=/usr/local/cuda/bin:$PATH' >> /etc/environment
-    echo 'export LD_LIBRARY_PATH=/usr/local/cuda/lib64:$LD_LIBRARY_PATH' >> /etc/environment
-    
+    echo "export PATH=/usr/local/cuda/bin:\$PATH" >> /etc/environment
+    echo "export LD_LIBRARY_PATH=/usr/local/cuda/lib64:\$LD_LIBRARY_PATH" >> /etc/environment
+
     # Install NVIDIA Container Toolkit for Docker
-    distribution=$(. /etc/os-release;echo $ID$VERSION_ID)
+    source /etc/os-release
     curl -s -L https://nvidia.github.io/nvidia-docker/gpgkey | apt-key add -
-    curl -s -L https://nvidia.github.io/nvidia-docker/$distribution/nvidia-docker.list | tee /etc/apt/sources.list.d/nvidia-docker.list
+    curl -s -L https://nvidia.github.io/nvidia-docker/$ID$VERSION_ID/nvidia-docker.list | tee /etc/apt/sources.list.d/nvidia-docker.list
     apt-get update -y
     apt-get install -y nvidia-docker2
     systemctl restart docker
@@ -105,30 +105,20 @@ source /opt/dto-env/bin/activate
 
 # Install Python dependencies for distributed training
 pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
-pip install \
-    numpy \
-    scipy \
-    scikit-learn \
-    matplotlib \
-    seaborn \
-    pandas \
-    jupyter \
-    tensorboard \
-    psutil \
-    nvidia-ml-py3 \
-    boto3
+pip install numpy scipy scikit-learn matplotlib seaborn pandas jupyter tensorboard psutil nvidia-ml-py3 boto3
 
 # Install Horovod with NCCL support
 log "Installing Horovod version $HOROVOD_VERSION..."
-HOROVOD_GPU_OPERATIONS=NCCL HOROVOD_WITH_PYTORCH=1 pip install horovod[pytorch]==$HOROVOD_VERSION
+HOROVOD_GPU_OPERATIONS=NCCL HOROVOD_WITH_PYTORCH=1 pip install "horovod[pytorch]==$HOROVOD_VERSION"
 
 # Make virtual environment accessible to all users
 chmod -R 755 /opt/dto-env
-echo 'source /opt/dto-env/bin/activate' >> /home/ubuntu/.bashrc
-echo 'source /opt/dto-env/bin/activate' >> /etc/skel/.bashrc
+echo "source /opt/dto-env/bin/activate" >> /home/ubuntu/.bashrc
+echo "source /opt/dto-env/bin/activate" >> /etc/skel/.bashrc
 
 # Install and configure EFA (if enabled)
-if [[ "$ENABLE_EFA" == "true" ]]; then
+if [[ "$ENABLE_EFA" == "true" ]]
+then
     log "Installing EFA drivers..."
     cd /tmp
     curl -O https://s3-us-west-2.amazonaws.com/aws-efa-installer/aws-efa-installer-latest.tar.gz
@@ -137,16 +127,18 @@ if [[ "$ENABLE_EFA" == "true" ]]; then
     ./efa_installer.sh -y
     
     # Configure EFA
-    echo 'export FI_PROVIDER=efa' >> /etc/environment
-    echo 'export FI_EFA_USE_DEVICE_RDMA=1' >> /etc/environment
+    echo "export FI_PROVIDER=efa" >> /etc/environment
+    echo "export FI_EFA_USE_DEVICE_RDMA=1" >> /etc/environment
 fi
 
 # Setup SSH key generation for passwordless SSH
-if [[ "$SETUP_SSH_KEYS" == "true" ]]; then
+if [[ "$SETUP_SSH_KEYS" == "true" ]]
+then
     log "Setting up SSH keys for passwordless access..."
     
     # Generate SSH key for ubuntu user if it doesn't exist
-    if [[ ! -f /home/ubuntu/.ssh/id_rsa ]]; then
+    if [[ ! -f /home/ubuntu/.ssh/id_rsa ]]
+    then
         sudo -u ubuntu ssh-keygen -t rsa -b 4096 -f /home/ubuntu/.ssh/id_rsa -N ""
         chmod 600 /home/ubuntu/.ssh/id_rsa
         chmod 644 /home/ubuntu/.ssh/id_rsa.pub
@@ -165,7 +157,8 @@ EOF
 fi
 
 # Setup shared storage mount point
-if [[ -n "$SHARED_STORAGE_MOUNT" ]]; then
+if [[ -n "$SHARED_STORAGE_MOUNT" ]]
+then
     log "Creating shared storage mount point: $SHARED_STORAGE_MOUNT"
     mkdir -p "$SHARED_STORAGE_MOUNT"
     chown ubuntu:ubuntu "$SHARED_STORAGE_MOUNT"
@@ -173,7 +166,8 @@ if [[ -n "$SHARED_STORAGE_MOUNT" ]]; then
 fi
 
 # Install and configure monitoring (if enabled)
-if [[ "$ENABLE_MONITORING" == "true" ]]; then
+if [[ "$ENABLE_MONITORING" == "true" ]]
+then
     log "Setting up CloudWatch monitoring..."
     
     # Install CloudWatch agent
@@ -287,11 +281,9 @@ mkdir -p /home/ubuntu/dto/{src,examples,checkpoints,logs}
 chown -R ubuntu:ubuntu /home/ubuntu/dto
 
 # Create a simple training environment test script
-cat > /home/ubuntu/test_environment.py << 'EOF'
+cat > /home/ubuntu/test_environment.py << EOF
 #!/usr/bin/env python3
-"""
-Test script to verify the HPC environment setup.
-"""
+""" Test script to verify the HPC environment setup. """
 import sys
 import torch
 import subprocess
@@ -321,10 +313,10 @@ def test_system():
     """Test system configuration."""
     try:
         # Test nvidia-smi
-        result = subprocess.run(['nvidia-smi'], capture_output=True, text=True)
+        result = subprocess.run(["nvidia-smi"], capture_output=True, text=True)
         if result.returncode == 0:
             print("nvidia-smi working correctly")
-            print(result.stdout.split('\n')[2])  # GPU info line
+            print(result.stdout.split("\n")[2])  # GPU info line
         else:
             print("nvidia-smi failed or not available")
     except FileNotFoundError:
@@ -354,7 +346,7 @@ After=network.target
 
 [Service]
 Type=oneshot
-ExecStart=/bin/bash -c 'source /opt/dto-env/bin/activate && echo "HPC environment ready" > /tmp/hpc-ready'
+ExecStart=/bin/bash -c "source /opt/dto-env/bin/activate && echo \"HPC environment ready\" > /tmp/hpc-ready"
 User=ubuntu
 RemainAfterExit=yes
 
