@@ -1,0 +1,29 @@
+syntax = "proto3";
+
+option go_package = "github.com/shajela/dto/pkg;metrics";
+
+package metrics;
+
+enum MetricType {
+  COUNTER = 0;
+  GAUGE = 1;
+}
+
+message Metric {
+  string name = 1;
+  MetricType type = 2;
+  double value = 3;
+  map<string, string> labels = 4;
+  int64 timestamp_ms = 5;
+}
+
+// Send once training loop completes (stream closed)
+message MetricAck {
+  bool success = 1;
+  string message = 2;
+}
+
+service MetricsService {
+  // Each app replica calls this once and streams metrics continuously
+  rpc StreamMetrics (stream Metric) returns (MetricAck);
+}
