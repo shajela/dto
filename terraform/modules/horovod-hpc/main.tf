@@ -17,8 +17,8 @@ data "aws_ami" "deep_learning_ami" {
   owners      = ["amazon"]
 
   filter {
-    name   = "name"
-    values = [var.ami_name_pattern]
+    name   = "image-id"
+    values = [var.ami_id]
   }
 
   filter {
@@ -423,6 +423,22 @@ resource "aws_launch_template" "hpc_launch_template" {
 
   user_data = local.user_data
 
+  network_interfaces {
+    device_index   = 0
+    subnet_id      = var.use_public_subnet ? (var.create_vpc ? aws_subnet.public_subnet[0].id : var.existing_public_subnet_id) : (var.create_vpc ? aws_subnet.private_subnet[0].id : var.existing_private_subnet_id)
+    security_groups = [aws_security_group.hpc_cluster_sg.id]
+  }
+
+  dynamic "network_interfaces" {
+    for_each = var.enable_efa ? [1] : []
+    content {
+      device_index   = 1
+      interface_type = "efa"
+      subnet_id      = var.use_public_subnet ? (var.create_vpc ? aws_subnet.public_subnet[0].id : var.existing_public_subnet_id) : (var.create_vpc ? aws_subnet.private_subnet[0].id : var.existing_private_subnet_id)
+      security_groups = [aws_security_group.hpc_cluster_sg.id]
+    }
+  }
+
   # Block device mappings
   block_device_mappings {
     device_name = "/dev/sda1"
@@ -505,7 +521,32 @@ resource "aws_instance" "hpc_nodes" {
 
   # Wait for instance to be ready before proceeding
   provisioner "remote-exec" {
-    inline = ["cloud-init status --wait"]
+    inline = [
+      "#!/bin/bash",
+      "set -euo pipefail",
+      "echo \"Waiting for cloud-init to complete...\"",
+      "MAX_WAIT=1200  # 20 minutes",
+      "ELAPSED=0",
+      "while [ $ELAPSED -lt $MAX_WAIT ]; do",
+      "  STATUS=$(cloud-init status)",
+      "  echo \"Cloud-init status after $ELAPSED seconds: $STATUS\"",
+      "  ",
+      "  if echo \"$STATUS\" | grep -o 'done'; then",
+      "    echo \"cloud-init completed successfully\"",
+      "    exit 0",
+      "  elif echo \"$STATUS\" | grep -o 'error'; then",
+      "    echo \"cloud-init failed with error status\"",
+      "    exit 1",
+      "  else",
+      "    echo \"cloud-init still running, waiting...\"",
+      "    sleep 15",
+      "    ELAPSED=$((ELAPSED + 15))",
+      "  fi",
+      "done",
+      "echo \"Timeout: cloud-init did not complete within $MAX_WAIT seconds\"",
+      "cloud-init status --long || true",
+      "exit 1"
+    ]
 
     connection {
       type        = "ssh"
@@ -515,24 +556,4 @@ resource "aws_instance" "hpc_nodes" {
       timeout     = "10m"
     }
   }
-}
-
-# EFA Network Interfaces (attached after instance creation when EFA is enabled)
-resource "aws_network_interface" "efa_interface" {
-  count           = var.enable_efa ? var.instance_count : 0
-  subnet_id       = var.use_public_subnet ? (var.create_vpc ? aws_subnet.public_subnet[0].id : var.existing_public_subnet_id) : (var.create_vpc ? aws_subnet.private_subnet[0].id : var.existing_private_subnet_id)
-  security_groups = [aws_security_group.hpc_cluster_sg.id]
-  interface_type  = "efa"
-
-  tags = merge(local.common_tags, {
-    Name = "${local.cluster_name}-efa-interface-${count.index + 1}"
-  })
-}
-
-# Attach EFA interfaces to instances
-resource "aws_network_interface_attachment" "efa_attachment" {
-  count                = var.enable_efa ? var.instance_count : 0
-  instance_id          = aws_instance.hpc_nodes[count.index].id
-  network_interface_id = aws_network_interface.efa_interface[count.index].id
-  device_index         = 1  # Use device index 1 since 0 is the primary interface
 }

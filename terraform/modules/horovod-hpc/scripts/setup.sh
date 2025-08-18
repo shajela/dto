@@ -7,6 +7,14 @@
 
 set -euo pipefail
 
+export DEBIAN_FRONTEND=noninteractive
+
+# Verify critical commands exist
+if ! command -v apt-get >/dev/null 2>&1; then
+    echo "ERROR: apt-get not found in PATH: $PATH" | tee -a /var/log/hpc-setup.log
+    exit 1
+fi
+
 # Template variables (replaced by Terraform)
 CLUSTER_NAME="${cluster_name}"
 REGION="${region}"
@@ -30,9 +38,13 @@ log "Region: $REGION"
 
 # Update system packages
 log "Updating system packages..."
-export DEBIAN_FRONTEND=noninteractive
 apt-get update -y
 apt-get upgrade -y
+
+# Add deadsnakes PPA for newer Python versions
+log "Adding deadsnakes PPA for Python 3.9..."
+add-apt-repository ppa:deadsnakes/ppa -y
+apt-get update -y
 
 # Install essential packages
 log "Installing essential packages..."
@@ -52,12 +64,12 @@ apt-get install -y \
     ca-certificates \
     gnupg \
     lsb-release \
-    python3-pip \
-    python3-dev \
-    python3-venv \
+    python3.9 \
+    python3.9-dev \
+    python3.9-venv \
+    python3.9-distutils \
     openssh-server \
-    nfs-common \
-    awscli
+    nfs-common
 
 # Configure AWS CLI with region
 log "Configuring AWS CLI..."
@@ -69,47 +81,52 @@ output = json
 EOF
 chown -R ubuntu:ubuntu /home/ubuntu/.aws
 
-# Install NVIDIA drivers and CUDA (if GPU instance)
-if [[ "$INSTANCE_TYPE" == g* ]] || [[ "$INSTANCE_TYPE" == p* ]]; then
-    log "Installing NVIDIA drivers and CUDA..."
-    
-    # Install NVIDIA drivers
-    apt-get install -y nvidia-driver-470
-    
-    # Install CUDA toolkit
-    wget https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2004/x86_64/cuda-keyring_1.0-1_all.deb
-    dpkg -i cuda-keyring_1.0-1_all.deb
-    apt-get update -y
-    apt-get install -y cuda-toolkit-$${CUDA_VERSION//./-}
-    
-    # Add CUDA to PATH
-    echo "export PATH=/usr/local/cuda/bin:\$PATH" >> /etc/environment
-    echo "export LD_LIBRARY_PATH=/usr/local/cuda/lib64:\$LD_LIBRARY_PATH" >> /etc/environment
+# The AMI ships with driver v535, attempting to
+# downgrade causes a mismatch between kernel and
+# user-space libaries
+# https://docs.nvidia.com/deploy/cuda-compatibility/minor-version-compatibility.html
+log "Installing NVIDIA drivers and CUDA..."
+# Install CUDA toolkit for Ubuntu 22.04
+# https://developer.nvidia.com/cuda-11-8-0-download-archive?target_os=Linux&target_arch=x86_64&Distribution=Ubuntu&target_version=22.04&target_type=deb_network
+wget https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2004/x86_64/cuda-keyring_1.0-1_all.deb
+sudo dpkg -i cuda-keyring_1.0-1_all.deb
+sudo apt-get update
+apt-get install -y cuda-toolkit-$${CUDA_VERSION//./-}
+# Install NCCL library
+apt-get install -y libnccl2=$${NCCL_VERSION}* libnccl-dev=$${NCCL_VERSION}*
 
-    # Install NVIDIA Container Toolkit for Docker
-    source /etc/os-release
-    curl -s -L https://nvidia.github.io/nvidia-docker/gpgkey | apt-key add -
-    curl -s -L https://nvidia.github.io/nvidia-docker/$ID$VERSION_ID/nvidia-docker.list | tee /etc/apt/sources.list.d/nvidia-docker.list
-    apt-get update -y
-    apt-get install -y nvidia-docker2
-    systemctl restart docker
-fi
-
-# Install Python packages and create virtual environment
-log "Setting up Python environment..."
-pip3 install --upgrade pip setuptools wheel
-
-# Create a virtual environment for the project
-python3 -m venv /opt/dto-env
+# Create a virtual environment using Python 3.9
+log "Creating virtual environment with Python 3.9..."
+python3.9 -m venv /opt/dto-env
 source /opt/dto-env/bin/activate
+# Ensure compatible versions in virtual environment
+log "Installing compatible build tools in virtual environment..."
+pip install --upgrade pip
+pip install "setuptools<66.0.0" "importlib_metadata<5.0.0" wheel
+# Verify Python version in virtual environment
+log "Python version in virtual environment: $(python --version)"
 
 # Install Python dependencies for distributed training
-pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+pip install torch==1.13.1+cu117 torchvision==0.14.1+cu117 torchaudio==0.13.1+cu117 --extra-index-url https://download.pytorch.org/whl/cu117
 pip install numpy scipy scikit-learn matplotlib seaborn pandas jupyter tensorboard psutil nvidia-ml-py3 boto3
 
 # Install Horovod with NCCL support
 log "Installing Horovod version $HOROVOD_VERSION..."
-HOROVOD_GPU_OPERATIONS=NCCL HOROVOD_WITH_PYTORCH=1 pip install "horovod[pytorch]==$HOROVOD_VERSION"
+# Add CUDA/NCCL libraries to PATH and LD_LIBRARY_PATH
+export PATH="/usr/local/cuda/bin:$PATH"
+export LD_LIBRARY_PATH="/usr/local/cuda/lib64:/usr/lib/x86_64-linux-gnu:$${LD_LIBRARY_PATH:-}"
+export NCCL_INCLUDE_DIR=/usr/include
+export NCCL_LIBRARY=/usr/lib/x86_64-linux-gnu/libnccl.so
+export HOROVOD_NCCL_INCLUDE_DIR=/usr/include
+export HOROVOD_NCCL_LIB_DIR=/usr/lib/x86_64-linux-gnu
+export HOROVOD_GPU_OPERATIONS=NCCL
+export HOROVOD_WITHOUT_TENSORFLOW=1
+export HOROVOD_WITHOUT_MXNET=1
+export HOROVOD_WITH_PYTORCH=1
+# Set CMake prefix path to find pytorch in the venv
+PYTORCH_PATH=$(python -c "import torch; print(torch.utils.cmake_prefix_path)")
+export CMAKE_PREFIX_PATH="$PYTORCH_PATH:$${CMAKE_PREFIX_PATH:-}"
+pip install "horovod[pytorch]==$HOROVOD_VERSION"
 
 # Make virtual environment accessible to all users
 chmod -R 755 /opt/dto-env

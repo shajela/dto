@@ -69,10 +69,11 @@ variable "instance_count" {
   }
 }
 
-variable "ami_name_pattern" {
-  description = "AMI name pattern to search for"
+variable "ami_id" {
+  description = "AMI ID to use for the instances"
   type        = string
-  default     = "Deep Learning AMI GPU PyTorch * (Ubuntu 20.04)*"
+  # Deep Learning OSS Nvidia Driver AMI GPU PyTorch 2.7 (Ubuntu 22.04)
+  default     = "ami-0f20cc6143e3cdb84"
 }
 
 # ============================================================================
