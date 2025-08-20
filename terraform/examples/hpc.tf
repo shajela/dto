@@ -19,3 +19,31 @@ module "hpc" {
   # endpoint is required but not provided
   use_public_subnet = true
 }
+
+output "cluster_name" {
+  value = module.hpc.cluster_name
+}
+
+output "master_node" {
+  value = module.hpc.master_node
+}
+
+output "worker_nodes" {
+  value = module.hpc.worker_nodes
+}
+
+output "total_gpus" {
+  value = module.hpc.total_gpus
+}
+
+output "ssh_key_name" {
+  value = module.hpc.ssh_key_name
+}
+
+output "secret_name" {
+  value = module.hpc.secret_name
+}
+
+output "cluster_region" {
+  value = module.hpc.cluster_region
+}

@@ -20,4 +20,5 @@ REGION=$(terraform output -raw cluster_region 2>/dev/null || echo "")
     --master-ip "$MASTER_IP" \
     --worker-ips "$WORKER_IPS" \
     --total-gpus "$TOTAL_GPUS" \
-    --secret-name "$SECRET_NAME"
+    --secret-name "$SECRET_NAME" \
+    --region "$REGION"

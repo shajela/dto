@@ -17,8 +17,8 @@ show_usage() {
     echo ""
     echo "Optional arguments:"
     echo "  --private-key PATH           Path to SSH private key (default: ~/.ssh/id_rsa)"
-    echo "  --use-secrets-manager        Use AWS Secrets Manager for SSH key"
     echo "  --secret-name NAME           Name of secret in AWS Secrets Manager"
+    echo "  --region REGION              Region of secret in AWS Secrets Manager"
     echo "  --help                       Show this help message"
     echo ""
     echo "Examples:"
@@ -30,6 +30,7 @@ show_usage() {
 PRIVATE_KEY_PATH="$HOME/.ssh/id_rsa"
 USE_SECRETS_MANAGER="false"
 SECRET_NAME=""
+REGION=""
 
 # Parse command line arguments
 while [[ $# -gt 0 ]]; do
@@ -60,6 +61,11 @@ while [[ $# -gt 0 ]]; do
             ;;
         --secret-name)
             SECRET_NAME="$2"
+            USE_SECRETS_MANAGER="true"
+            shift 2
+            ;;
+        --region)
+            REGION="$2"
             USE_SECRETS_MANAGER="true"
             shift 2
             ;;
@@ -100,8 +106,8 @@ if [[ -z "${TOTAL_GPUS:-}" ]]; then
     exit 1
 fi
 
-if [[ "$USE_SECRETS_MANAGER" == "true" && -z "$SECRET_NAME" ]]; then
-    echo "Error: --secret-name is required when using secrets manager"
+if [[ "$USE_SECRETS_MANAGER" == "true" && (-z "$SECRET_NAME" || -z "$REGION") ]]; then
+    echo "Error: --secret-name and --region are required when using secrets manager"
     show_usage
     exit 1
 fi
@@ -117,17 +123,20 @@ echo "==========================================================================
 if [[ "$USE_SECRETS_MANAGER" == "true" ]]; then
     echo "Retrieving SSH private key from AWS Secrets Manager..."
     TEMP_KEY_FILE="/tmp/cluster-key-$$.pem"
-    aws secretsmanager get-secret-value --secret-id "$SECRET_NAME" --query SecretString --output text | jq -r .private_key > "$TEMP_KEY_FILE"
+    aws secretsmanager get-secret-value --secret-id "$SECRET_NAME" --region "$REGION" --query SecretString --output text | jq -r .private_key > "$TEMP_KEY_FILE"
     chmod 600 "$TEMP_KEY_FILE"
     PRIVATE_KEY_PATH="$TEMP_KEY_FILE"
     
     # Cleanup function to remove temporary key file
-    cleanup() {
+    cleanup_ssh_key() {
         if [[ -f "$TEMP_KEY_FILE" ]]; then
+            echo "Cleaning up temporary SSH key file: $TEMP_KEY_FILE"
             rm -f "$TEMP_KEY_FILE"
         fi
     }
-    trap cleanup EXIT
+    
+    # Set initial trap for SSH key cleanup
+    trap cleanup_ssh_key EXIT
 fi
 
 # Function to execute commands on remote hosts
@@ -183,6 +192,10 @@ ssh_exec $MASTER_IP "echo '$MASTER_PUBKEY' >> /home/ubuntu/.ssh/authorized_keys"
 
 for worker_ip in "${WORKER_IPS[@]}"; do
     ssh_exec $worker_ip "echo '$MASTER_PUBKEY' >> /home/ubuntu/.ssh/authorized_keys"
+    
+    # Also get worker's public key and add it to master for bidirectional SSH
+    WORKER_PUBKEY=$(ssh_exec $worker_ip "cat /home/ubuntu/.ssh/id_rsa.pub")
+    ssh_exec $MASTER_IP "echo '$WORKER_PUBKEY' >> /home/ubuntu/.ssh/authorized_keys"
 done
 
 # Detect GPUs per node dynamically for SLURM configuration
@@ -244,18 +257,19 @@ PartitionName=gpu Nodes=ALL Default=YES MaxTime=INFINITE State=UP DefaultTime=60
 EOF
 
 # Add node definitions to SLURM config
-ssh_exec $MASTER_IP "echo 'NodeName=\$(hostname) CPUs=\$(nproc) Sockets=\$(lscpu | grep 'Socket(s):' | awk '{print \$2}') CoresPerSocket=\$((\$(nproc)/\$(lscpu | grep 'Socket(s):' | awk '{print \$2}'))) ThreadsPerCore=1 RealMemory=\$((\$(free -m | grep '^Mem:' | awk '{print \$2}') - 1000)) Gres=gpu:$GPUS_PER_NODE State=UNKNOWN' >> /tmp/slurm.conf"
+ssh_exec $MASTER_IP 'HOSTNAME=$(hostname); CPUS=$(nproc); SOCKETS=$(lscpu | grep "Socket(s):" | awk "{print \$2}"); CORES_PER_SOCKET=$((CPUS/SOCKETS)); MEMORY=$(($(free -m | grep "^Mem:" | awk "{print \$2}") - 1000)); echo "NodeName=$HOSTNAME CPUs=$CPUS Sockets=$SOCKETS CoresPerSocket=$CORES_PER_SOCKET ThreadsPerCore=1 RealMemory=$MEMORY Gres=gpu:'$GPUS_PER_NODE' State=UNKNOWN" >> /tmp/slurm.conf'
 
 for worker_ip in "${WORKER_IPS[@]}"; do
-    ssh_exec $worker_ip "echo 'NodeName=\$(hostname) CPUs=\$(nproc) Sockets=\$(lscpu | grep 'Socket(s):' | awk '{print \$2}') CoresPerSocket=\$((\$(nproc)/\$(lscpu | grep 'Socket(s):' | awk '{print \$2}'))) ThreadsPerCore=1 RealMemory=\$((\$(free -m | grep '^Mem:' | awk '{print \$2}') - 1000)) Gres=gpu:$GPUS_PER_NODE State=UNKNOWN' | ssh_exec $MASTER_IP 'cat >> /tmp/slurm.conf'"
+    # Collect node info and append to master config
+    NODE_INFO=$(ssh_exec $worker_ip 'HOSTNAME=$(hostname); CPUS=$(nproc); SOCKETS=$(lscpu | grep "Socket(s):" | awk "{print \$2}"); CORES_PER_SOCKET=$((CPUS/SOCKETS)); MEMORY=$(($(free -m | grep "^Mem:" | awk "{print \$2}") - 1000)); echo "NodeName=$HOSTNAME CPUs=$CPUS Sockets=$SOCKETS CoresPerSocket=$CORES_PER_SOCKET ThreadsPerCore=1 RealMemory=$MEMORY Gres=gpu:'$GPUS_PER_NODE' State=UNKNOWN"')
+    ssh_exec $MASTER_IP "echo '$NODE_INFO' >> /tmp/slurm.conf"
 done
 
 # Copy SLURM config to all nodes
 ssh_exec $MASTER_IP "sudo cp /tmp/slurm.conf /etc/slurm/slurm.conf"
 for worker_ip in "${WORKER_IPS[@]}"; do
-    # Copy and then move on local due to permissions
-    ssh_copy $MASTER_IP "/tmp/slurm.conf" "$worker_ip:/tmp/slurm.conf"
-    ssh_exec $worker_ip "sudo cp /tmp/slurm.conf /etc/slurm/slurm.conf"
+    # Copy SLURM config from master to worker
+    ssh_exec $MASTER_IP "cat /tmp/slurm.conf" | ssh_exec $worker_ip "cat > /tmp/slurm.conf && sudo cp /tmp/slurm.conf /etc/slurm/slurm.conf"
 done
 
 # Configure GPU resources
@@ -276,18 +290,43 @@ for node_ip in $MASTER_IP "${WORKER_IPS[@]}"; do
 done
 
 # Deploy DTO framework
+REPO="https://github.com/shajela/dto.git"
+CLONE_DIR=$(mktemp -d)
+FRAMEWORK_DIR="$CLONE_DIR/src/dto"
+
+# Combined cleanup function
+cleanup_all() {
+    echo "Running cleanup..."
+    
+    # Clean up git clone directory
+    if [[ -n "${CLONE_DIR:-}" && -d "$CLONE_DIR" ]]; then
+        echo "Cleaning up temporary git directory: $CLONE_DIR"
+        rm -rf "$CLONE_DIR"
+    fi
+    
+    # Clean up SSH key if using secrets manager
+    if [[ "$USE_SECRETS_MANAGER" == "true" && -f "${TEMP_KEY_FILE:-}" ]]; then
+        cleanup_ssh_key
+    fi
+}
+trap cleanup_all EXIT
+
+# Clone repo to copy framework
+echo "Cloning DTO repo locally..."
+git clone "$REPO" "$CLONE_DIR"
+
 echo "Deploying DTO framework files to all nodes..."
 # Copy framework files to master node
-ssh_copy distributed_trainer.py $MASTER_IP "/home/ubuntu/dto/distributed_trainer.py"
+ssh_exec $MASTER_IP "mkdir -p /home/ubuntu/dto"
+ssh_copy $MASTER_IP "$FRAMEWORK_DIR/distributed_trainer.py" "/home/ubuntu/dto"
 
 # Copy framework files to all worker nodes
 for worker_ip in "${WORKER_IPS[@]}"; do
     echo "Copying framework files to worker: $worker_ip"
-    ssh_copy distributed_trainer.py $worker_ip "/home/ubuntu/dto/distributed_trainer.py"
+    ssh_exec $worker_ip "mkdir -p /home/ubuntu/dto"
+    ssh_copy $worker_ip "$FRAMEWORK_DIR/distributed_trainer.py" "/home/ubuntu/dto"
 done
-
 echo "Framework deployed to all nodes in /home/ubuntu/dto/"
-echo "Training scripts can now import: from distributed_trainer import DistributedTrainer"
 
 # Start SLURM services
 ssh_exec $MASTER_IP "sudo systemctl enable slurmctld && sudo systemctl start slurmctld"
@@ -512,7 +551,7 @@ echo "==========================================================================
 echo "Master Node: $MASTER_IP"
 echo "Total GPUs: $TOTAL_GPUS"
 echo ""
-echo "SLURM Job Submission:
+echo "SLURM Job Submission:"
 echo "1. SSH to master: ssh -i $PRIVATE_KEY_PATH ubuntu@$MASTER_IP"
 echo "2. Submit job: ./submit_job.sh train.py" 
 echo "3. Monitor jobs: ./slurm_status.sh or squeue -u ubuntu"
