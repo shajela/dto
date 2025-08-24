@@ -213,20 +213,23 @@ for worker_ip in "${WORKER_IPS[@]}"; do
 done
 
 # Create SLURM configuration
+# https://slurm.schedmd.com/slurm.conf.html
+# https://slurm.schedmd.com/gres.html
+# https://slurm.schedmd.com/configurator.html
+HOSTNAME=$(ssh_exec $MASTER_IP "hostname")
 ssh_exec $MASTER_IP "cat > /tmp/slurm.conf" << EOF
 # SLURM Configuration for HPC Cluster
 ClusterName=$CLUSTER_NAME
-ControlMachine=\$(hostname)
-ControlAddr=$MASTER_IP
+SlurmctldHost=$HOSTNAME
 SlurmUser=slurm
 SlurmdUser=root
 SlurmctldPort=6817
 SlurmdPort=6818
-AuthType=auth/none
 StateSaveLocation=/var/spool/slurm/ctld
 SlurmdSpoolDir=/var/spool/slurm/d
 SwitchType=switch/none
-MpiDefault=pmix
+# Use Gloo
+MpiDefault=none
 ProctrackType=proctrack/cgroup
 TaskPlugin=task/cgroup
 ReturnToService=2
@@ -253,15 +256,15 @@ SlurmdDebug=info
 SlurmdLogFile=/var/log/slurm/slurmd.log
 
 # Node definitions
+GresTypes=gpu
 PartitionName=gpu Nodes=ALL Default=YES MaxTime=INFINITE State=UP DefaultTime=60
 EOF
 
 # Add node definitions to SLURM config
-ssh_exec $MASTER_IP 'HOSTNAME=$(hostname); CPUS=$(nproc); SOCKETS=$(lscpu | grep "Socket(s):" | awk "{print \$2}"); CORES_PER_SOCKET=$((CPUS/SOCKETS)); MEMORY=$(($(free -m | grep "^Mem:" | awk "{print \$2}") - 1000)); echo "NodeName=$HOSTNAME CPUs=$CPUS Sockets=$SOCKETS CoresPerSocket=$CORES_PER_SOCKET ThreadsPerCore=1 RealMemory=$MEMORY Gres=gpu:'$GPUS_PER_NODE' State=UNKNOWN" >> /tmp/slurm.conf'
-
+ssh_exec $MASTER_IP 'HOSTNAME=$(hostname); CPUS=$(nproc --all); SOCKETS=$(lscpu | awk "/Socket\\(s\\)/{print \$2}"); CORES_PER_SOCKET=$(lscpu | awk "/Core\\(s\\) per socket/{print \$4}"); THREADS_PER_CORE=$(lscpu | awk "/Thread\\(s\\) per core/{print \$4}"); MEMORY=$(($(free -m | awk "/^Mem:/{print \$2}") - 1000)); echo "NodeName=$HOSTNAME CPUs=$CPUS Sockets=$SOCKETS CoresPerSocket=$CORES_PER_SOCKET ThreadsPerCore=$THREADS_PER_CORE RealMemory=$MEMORY Gres=gpu:'$GPUS_PER_NODE' State=UNKNOWN" >> /tmp/slurm.conf'
 for worker_ip in "${WORKER_IPS[@]}"; do
     # Collect node info and append to master config
-    NODE_INFO=$(ssh_exec $worker_ip 'HOSTNAME=$(hostname); CPUS=$(nproc); SOCKETS=$(lscpu | grep "Socket(s):" | awk "{print \$2}"); CORES_PER_SOCKET=$((CPUS/SOCKETS)); MEMORY=$(($(free -m | grep "^Mem:" | awk "{print \$2}") - 1000)); echo "NodeName=$HOSTNAME CPUs=$CPUS Sockets=$SOCKETS CoresPerSocket=$CORES_PER_SOCKET ThreadsPerCore=1 RealMemory=$MEMORY Gres=gpu:'$GPUS_PER_NODE' State=UNKNOWN"')
+    NODE_INFO=$(ssh_exec $worker_ip 'HOSTNAME=$(hostname); CPUS=$(nproc --all); SOCKETS=$(lscpu | awk "/Socket\\(s\\)/{print \$2}"); CORES_PER_SOCKET=$(lscpu | awk "/Core\\(s\\) per socket/{print \$4}"); THREADS_PER_CORE=$(lscpu | awk "/Thread\\(s\\) per core/{print \$4}"); MEMORY=$(($(free -m | awk "/^Mem:/{print \$2}") - 1000)); echo "NodeName=$HOSTNAME CPUs=$CPUS Sockets=$SOCKETS CoresPerSocket=$CORES_PER_SOCKET ThreadsPerCore=$THREADS_PER_CORE RealMemory=$MEMORY Gres=gpu:'$GPUS_PER_NODE' State=UNKNOWN"')
     ssh_exec $MASTER_IP "echo '$NODE_INFO' >> /tmp/slurm.conf"
 done
 
@@ -270,6 +273,18 @@ ssh_exec $MASTER_IP "sudo cp /tmp/slurm.conf /etc/slurm/slurm.conf"
 for worker_ip in "${WORKER_IPS[@]}"; do
     # Copy SLURM config from master to worker
     ssh_exec $MASTER_IP "cat /tmp/slurm.conf" | ssh_exec $worker_ip "cat > /tmp/slurm.conf && sudo cp /tmp/slurm.conf /etc/slurm/slurm.conf"
+done
+
+# Configure cgroup
+ssh_exec $MASTER_IP "cat > /tmp/cgroup.conf" << 'EOF'
+CgroupAutomount=yes
+ConstrainCores=no
+ConstrainRAMSpace=no
+EOF
+ssh_exec $MASTER_IP "sudo cp /tmp/cgroup.conf /etc/slurm/cgroup.conf"
+for worker_ip in "${WORKER_IPS[@]}"; do
+    # Copy SLURM config from master to worker
+    ssh_exec $MASTER_IP "cat /tmp/cgroup.conf" | ssh_exec $worker_ip "cat > /tmp/cgroup.conf && sudo cp /tmp/cgroup.conf /etc/slurm/cgroup.conf"
 done
 
 # Configure GPU resources
@@ -281,6 +296,20 @@ done
 # Create SLURM directories and set permissions
 for node_ip in $MASTER_IP "${WORKER_IPS[@]}"; do
     ssh_exec $node_ip "sudo mkdir -p /var/spool/slurm/{ctld,d} /var/log/slurm && sudo chown slurm:slurm /var/spool/slurm/{ctld,d} /var/log/slurm"
+done
+
+# Configure munge
+# https://slurm.schedmd.com/quickstart_admin.html#quick_start
+echo "Copying munge keys..."
+for worker_ip in "${WORKER_IPS[@]}"; do
+    ssh_exec $MASTER_IP "sudo cat /etc/munge/munge.key" | ssh_exec $worker_ip "cat > /tmp/munge.key && sudo cp /tmp/munge.key /etc/munge/munge.key && sudo chown munge:munge /etc/munge/munge.key && sudo chmod 400 /etc/munge/munge.key && sudo systemctl restart munge"
+done
+
+# Reload config - this mainly has a purpose
+# during dev
+ssh_exec $MASTER_IP "sudo systemctl restart slurmctld && sudo systemctl restart slurmd"
+for worker_ip in "${WORKER_IPS[@]}"; do
+    ssh_exec $worker_ip "sudo systemctl restart slurmd"
 done
 
 # Setup DTO framework directory on all nodes for Python imports
@@ -330,14 +359,41 @@ echo "Framework deployed to all nodes in /home/ubuntu/dto/"
 
 # Start SLURM services
 ssh_exec $MASTER_IP "sudo systemctl enable slurmctld && sudo systemctl start slurmctld"
-for worker_ip in "${WORKER_IPS[@]}"; do
-    ssh_exec $worker_ip "sudo systemctl enable slurmd && sudo systemctl start slurmd"
+for node_ip in $MASTER_IP "${WORKER_IPS[@]}"; do
+    ssh_exec $node_ip "sudo systemctl enable slurmd && sudo systemctl start slurmd"
 done
 
-# Create submission script
+# Configure NCCL environment variables on all nodes
+echo "Configuring NCCL environment variables on all nodes..."
+for node_ip in $MASTER_IP "${WORKER_IPS[@]}"; do
+    ssh_exec $node_ip "cat > /home/ubuntu/configure_nccl.sh" << 'EOF'
+#!/bin/bash
+
+# Check if InfiniBand is available and configure accordingly
+if lspci | grep -i infiniband > /dev/null 2>&1; then
+    echo "InfiniBand detected - enabling IB support"
+else
+    echo "No InfiniBand detected - using Ethernet only"
+    export NCCL_IB_DISABLE=1
+fi
+
+# Configure NCCL environment variables
+sudo tee -a /etc/environment << EOFNCCL
+NCCL_SOCKET_IFNAME=$(ip route show | grep default | awk '{print $5}')
+NCCL_TREE_THRESHOLD=0
+NCCL_NET_GDR_LEVEL=0
+EOFNCCL
+EOF
+
+    ssh_exec $node_ip "chmod +x /home/ubuntu/configure_nccl.sh && /home/ubuntu/configure_nccl.sh"
+done
+
+# Create submission script on the master node
 ssh_exec $MASTER_IP "cat > /home/ubuntu/submit_job.sh" << 'EOF'
 #!/bin/bash
-# SLURM job submission script
+# SLURM job submission wrapper
+
+source /etc/environment
 
 if [ $# -eq 0 ]; then
     echo "Usage: $0 <python_script> [args...]"
@@ -354,44 +410,48 @@ SCRIPT_NAME=$(basename "$SCRIPT" .py)
 TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
 JOB_NAME="${SCRIPT_NAME}_${TIMESTAMP}"
 
+GPUS_PER_NODE=$(nvidia-smi -L | wc -l)
+NODES=$(sinfo -N -h | wc -l)
+TOTAL_TASKS=$((NODES * GPUS_PER_NODE))
+
 # Create SLURM batch script
-cat > /tmp/dto_job.sbatch << SBATCH_EOF
+BATCH_FILE=/home/ubuntu/dto_job.sbatch
+cat > "$BATCH_FILE" << EOT
 #!/bin/bash
-#SBATCH --job-name=$JOB_NAME
+#SBATCH --job-name=${JOB_NAME}
 #SBATCH --partition=gpu
-#SBATCH --nodes=\$(sinfo -N -h | wc -l)
-#SBATCH --ntasks=\$((\$(sinfo -N -h | wc -l) * $GPUS_PER_NODE))
-#SBATCH --ntasks-per-node=$GPUS_PER_NODE
-#SBATCH --gres=gpu:$GPUS_PER_NODE
+#SBATCH --nodes=${NODES}
+#SBATCH --ntasks=${TOTAL_TASKS}
+#SBATCH --ntasks-per-node=${GPUS_PER_NODE}
+#SBATCH --gres=gpu:${GPUS_PER_NODE}
 #SBATCH --time=24:00:00
 #SBATCH --output=/home/ubuntu/slurm-%j.out
 #SBATCH --error=/home/ubuntu/slurm-%j.err
-
-# Load environment
-source /etc/environment
 
 # Environment setup
 export HOROVOD_GPU_OPERATIONS=NCCL
 export HOROVOD_WITH_PYTORCH=1
 
-# Add DTO framework to Python path for imports
+# Add DTO framework to Python path
 export PYTHONPATH="/home/ubuntu/dto:\$PYTHONPATH"
 
 # Run training
 echo "Starting training job \$SLURM_JOB_ID"
 echo "Script: $SCRIPT"
+echo "Args: $ARGS"
 echo "Nodes: \$SLURM_JOB_NODELIST"
 echo "Total GPUs: \$SLURM_NTASKS"
 
-srun --mpi=pmix python $SCRIPT $ARGS
-SBATCH_EOF
+source /opt/dto-env/bin/activate
+srun python $SCRIPT $ARGS
+EOT
 
 # Submit the job
 echo "Submitting training job..."
-JOB_ID=\$(sbatch /tmp/dto_job.sbatch | awk '{print \$4}')
-echo "Job submitted with ID: \$JOB_ID"
-echo "Monitor with: squeue -j \$JOB_ID"
-echo "View output: tail -f /home/ubuntu/slurm-\$JOB_ID.out"
+JOB_ID=$(sbatch "$BATCH_FILE" | awk '{print $4}')
+echo "Job submitted with ID: $JOB_ID"
+echo "Monitor with: squeue -j $JOB_ID"
+echo "View output: tail -f /home/ubuntu/slurm-$JOB_ID.out"
 EOF
 
 ssh_exec $MASTER_IP "cat > /home/ubuntu/slurm_status.sh" << 'EOF'
@@ -445,10 +505,9 @@ EOF
 # Make scripts executable
 ssh_exec $MASTER_IP "chmod +x /home/ubuntu/submit_job.sh /home/ubuntu/slurm_status.sh"
 
-# Run initial cluster test
-echo "Running initial cluster test..."
-
-ssh_exec $MASTER_IP "cat > /home/ubuntu/cluster_test.py" << 'EOF'
+# Copy cluster test script to all nodes
+for node_ip in $MASTER_IP "${WORKER_IPS[@]}"; do
+    ssh_exec $node_ip "cat > /home/ubuntu/cluster_test.py" << 'EOF'
 #!/usr/bin/env python3
 import torch
 import horovod.torch as hvd
@@ -478,8 +537,8 @@ if torch.cuda.is_available():
     summed = hvd.allreduce(tensor, average=False)
     
     print(f"Rank {rank}: GPU {torch.cuda.current_device()}, "
-          f"Device: {torch.cuda.get_device_name()}, "
-          f"Allreduce sum: {summed.item()}")
+        f"Device: {torch.cuda.get_device_name()}, "
+        f"Allreduce sum: {summed.item()}")
 else:
     print(f"Rank {rank}: No CUDA available")
 
@@ -489,6 +548,7 @@ hvd.allreduce(torch.tensor(0.0))
 if rank == 0:
     print(f"Cluster test completed successfully with {size} processes!")
 EOF
+done
 
 echo "Running SLURM cluster test..."
 if ssh_exec $MASTER_IP "cd /home/ubuntu && ./submit_job.sh cluster_test.py" 2>/dev/null; then
@@ -515,7 +575,7 @@ Worker Nodes: ${WORKER_IPS[@]}
 SLURM Configuration:
 - Cluster managed by SLURM workload manager
 - GPU partition with all nodes
-- MPI support via PMIx
+- Gloo backend for collective communications
 - Job scheduling and resource allocation
 - All training execution enforced through SLURM
 

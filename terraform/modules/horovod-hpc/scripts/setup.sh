@@ -108,7 +108,9 @@ log "Python version in virtual environment: $(python --version)"
 
 # Install Python dependencies for distributed training
 pip install torch==1.13.1+cu117 torchvision==0.14.1+cu117 torchaudio==0.13.1+cu117 --extra-index-url https://download.pytorch.org/whl/cu117
-pip install numpy scipy scikit-learn matplotlib seaborn pandas jupyter tensorboard psutil nvidia-ml-py3 boto3
+# Numpy<2 to resolve the error "A module that was compiled using NumPy 1.x cannot be run in NumPy 2.x as it may crash."
+pip install "numpy<2"
+pip install scipy scikit-learn matplotlib seaborn pandas jupyter tensorboard psutil nvidia-ml-py3 boto3
 
 # Install Horovod with NCCL support
 log "Installing Horovod version $HOROVOD_VERSION..."
