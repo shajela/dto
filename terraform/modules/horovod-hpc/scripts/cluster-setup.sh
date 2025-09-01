@@ -345,9 +345,12 @@ echo "Cloning DTO repo locally..."
 git clone "$REPO" "$CLONE_DIR"
 
 echo "Deploying DTO framework files to all nodes..."
-# Copy framework files to master node
-ssh_exec $MASTER_IP "mkdir -p /home/ubuntu/dto"
-ssh_copy $MASTER_IP "$FRAMEWORK_DIR/distributed_trainer.py" "/home/ubuntu/dto"
+for node_ip in $MASTER_IP "${WORKER_IPS[@]}"; do
+    # Copy framework files to master node
+    ssh_exec $node_ip "mkdir -p /home/ubuntu/dto"
+    # ssh_copy function does not support wildcard
+    scp -i "$PRIVATE_KEY_PATH" -o StrictHostKeyChecking=no $FRAMEWORK_DIR/*.py ubuntu@$node_ip:"/home/ubuntu/dto"
+done
 
 # Copy framework files to all worker nodes
 for worker_ip in "${WORKER_IPS[@]}"; do

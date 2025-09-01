@@ -74,6 +74,9 @@ class DistributedTrainer:
         self.local_rank = hvd.local_rank()
         self.auto_scale_lr = auto_scale_lr
         self.auto_scale_batch_size = auto_scale_batch_size
+
+        # Setup logging (only on rank 0)
+        self.logger = self._setup_logging()
         self.verbose = verbose
         
         # Checkpointing configuration
@@ -88,9 +91,6 @@ class DistributedTrainer:
         self.s3_client = None
         self.s3_bucket_name = None
         self._setup_s3_client()
-        
-        # Setup logging (only on rank 0)
-        self.logger = self._setup_logging()
         
         if self.is_master():
             self.log(f"Initialized distributed training on {self.size} processes")

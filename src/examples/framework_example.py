@@ -40,13 +40,13 @@ def create_synthetic_data() -> TensorDataset:
     return TensorDataset(X_tensor, y_tensor)
 
 
-def main_simple() -> None:
+def main_simple(arn: str) -> None:
     """
     Simple usage - let the framework handle everything with default training loop
     """
     # Create trainer with basic checkpointing
     trainer = DistributedTrainer(
-        s3_bucket_arn="arn:aws:s3:::my-training-checkpoints",  # Your S3 bucket
+        s3_bucket_arn=arn,  # Your S3 bucket
         auto_scale_lr=True,
         verbose=True,
         checkpoint_interval=10,  # Save every 10 epochs
@@ -414,23 +414,25 @@ def s3_download_example() -> None:
 
 
 if __name__ == "__main__":
+    s3_bucket_arn = "arn:aws:s3:::training-data-dto-demo"
+
     print("=== Basic Usage (Framework handles everything) ===")
-    main_simple()
+    main_simple(arn=s3_bucket_arn)
     
-    print("\n=== Training with S3 Backup ===")
-    # main_with_s3_backup()  # Uncomment if you have S3 bucket configured
+    # print("\n=== Training with S3 Backup ===")
+    # main_with_s3_backup()
     
-    print("\n=== Training with Resume Functionality ===")
-    main_with_resume()
+    # print("\n=== Training with Resume Functionality ===")
+    # main_with_resume()
     
-    print("\n=== Best Checkpoint Only ===")
-    main_best_checkpoint_only()
+    # print("\n=== Best Checkpoint Only ===")
+    # main_best_checkpoint_only()
     
-    print("\n=== Custom Training Step with Checkpointing ===")
-    main_custom()
+    # print("\n=== Custom Training Step with Checkpointing ===")
+    # main_custom()
     
-    print("\n=== Manual Checkpoint Management ===")
-    manual_checkpoint_example()
+    # print("\n=== Manual Checkpoint Management ===")
+    # manual_checkpoint_example()
     
-    print("\n=== S3 Download Example ===")
-    # s3_download_example()  # Uncomment if you have S3 bucket with checkpoints
+    # print("\n=== S3 Download Example ===")
+    # s3_download_example()
