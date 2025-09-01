@@ -76,8 +76,8 @@ class DistributedTrainer:
         self.auto_scale_batch_size = auto_scale_batch_size
 
         # Setup logging (only on rank 0)
-        self.logger = self._setup_logging()
         self.verbose = verbose
+        self.logger = self._setup_logging()
         
         # Checkpointing configuration
         self.checkpoint_interval = checkpoint_interval
@@ -855,7 +855,6 @@ class DistributedTrainer:
     
     def fit(self,
             model: nn.Module,
-            train_loader: DataLoader,
             optimizer: optim.Optimizer,
             criterion: nn.Module,
             num_epochs: int,

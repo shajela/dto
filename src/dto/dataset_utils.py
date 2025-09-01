@@ -43,13 +43,9 @@ class S3Dataset(Dataset):
         self._length = None
     
     def __len__(self):
-        if self._length is None:
-            raise RuntimeError("Dataset not loaded yet. This is expected before distributed training starts.")
         return self._length
     
     def __getitem__(self, idx):
-        if self._data is None:
-            raise RuntimeError("Dataset not loaded yet. This is expected before distributed training starts.")
         return self._data[idx]
 
 

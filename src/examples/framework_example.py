@@ -53,14 +53,6 @@ def main_simple(arn: str) -> None:
         keep_last_n_checkpoints=3  # Keep only last 3 checkpoints
     )
     
-    # Mock data
-    dataset = create_s3_dataset(
-        s3_path="training-data/housing_prices.csv",
-        target_column="price_category",
-        feature_columns=["bedrooms", "bathrooms", "sqft", "age", "location_score"]
-    )
-    train_loader = DataLoader(dataset, batch_size=32, shuffle=True)
-    
     # Create model
     model = SimpleNet(input_size=20, hidden_size=64, num_classes=2)
     
@@ -71,7 +63,6 @@ def main_simple(arn: str) -> None:
     # Train using framework (automatically handles all Horovod complexity)
     history = trainer.fit(
         model=model,
-        train_loader=train_loader,
         optimizer=optimizer,
         criterion=criterion,
         num_epochs=50
