@@ -855,6 +855,7 @@ class DistributedTrainer:
     
     def fit(self,
             model: nn.Module,
+            train_loader: DataLoader,
             optimizer: optim.Optimizer,
             criterion: nn.Module,
             num_epochs: int,
