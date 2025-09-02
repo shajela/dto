@@ -156,6 +156,8 @@ class DistributedTrainer:
         # Create temporary directory for downloading data
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = os.path.join(temp_dir, "data")
+            os.makedirs(temp_path, exist_ok=True)
+            temp_path = os.path.join(temp_path, os.path.basename(s3_path))
             
             # Download data from S3
             try:
