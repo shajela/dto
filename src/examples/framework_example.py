@@ -54,14 +54,14 @@ def main_simple(arn: str) -> None:
     )
 
     dataset = create_s3_dataset(
-        s3_path="training-data/housing_prices.csv",
+        s3_path="housing_prices.csv",
         target_column="price_category",
         feature_columns=["bedrooms", "bathrooms", "sqft", "age", "location_score"]
     )
     train_loader = DataLoader(dataset, batch_size=32, shuffle=True)
     
     # Create model
-    model = SimpleNet(input_size=20, hidden_size=64, num_classes=2)
+    model = SimpleNet(input_size=5, hidden_size=64, num_classes=2)
     
     # Create optimizer and criterion
     optimizer = optim.Adam(model.parameters(), lr=0.001)
@@ -97,12 +97,12 @@ def main_with_s3_backup() -> None:
     
     # Mock data
     dataset = create_s3_dataset(
-        s3_path="training-data/housing_prices.csv",
+        s3_path="housing_prices.csv",
         target_column="price_category",
         feature_columns=["bedrooms", "bathrooms", "sqft", "age", "location_score"]
     )
     train_loader = DataLoader(dataset, batch_size=32, shuffle=True)
-    model = SimpleNet(input_size=20, hidden_size=64, num_classes=2)
+    model = SimpleNet(input_size=5, hidden_size=64, num_classes=2)
     optimizer = optim.Adam(model.parameters(), lr=0.001)
     criterion = nn.CrossEntropyLoss()
     
@@ -139,12 +139,12 @@ def main_with_resume() -> None:
     
     # Create data and model
     dataset = create_s3_dataset(
-        s3_path="training-data/housing_prices.csv",
+        s3_path="housing_prices.csv",
         target_column="price_category",
         feature_columns=["bedrooms", "bathrooms", "sqft", "age", "location_score"]
     )
     train_loader = DataLoader(dataset, batch_size=32, shuffle=True)
-    model = SimpleNet(input_size=20, hidden_size=64, num_classes=2)
+    model = SimpleNet(input_size=5, hidden_size=64, num_classes=2)
     optimizer = optim.Adam(model.parameters(), lr=0.001)
     criterion = nn.CrossEntropyLoss()
     
@@ -192,12 +192,12 @@ def main_best_checkpoint_only() -> None:
     
     # Mock data
     dataset = create_s3_dataset(
-        s3_path="training-data/housing_prices.csv",
+        s3_path="housing_prices.csv",
         target_column="price_category",
         feature_columns=["bedrooms", "bathrooms", "sqft", "age", "location_score"]
     )
     train_loader = DataLoader(dataset, batch_size=32, shuffle=True)
-    model = SimpleNet(input_size=20, hidden_size=64, num_classes=2)
+    model = SimpleNet(input_size=5, hidden_size=64, num_classes=2)
     optimizer = optim.Adam(model.parameters(), lr=0.001)
     criterion = nn.CrossEntropyLoss()
     
@@ -287,14 +287,14 @@ def main_custom() -> None:
     
     # Mock data
     dataset = create_s3_dataset(
-        s3_path="training-data/housing_prices.csv",
+        s3_path="housing_prices.csv",
         target_column="price_category",
         feature_columns=["bedrooms", "bathrooms", "sqft", "age", "location_score"]
     )
     train_loader = DataLoader(dataset, batch_size=32, shuffle=True)
     
     # Create model
-    model = SimpleNet(input_size=20, hidden_size=64, num_classes=2)
+    model = SimpleNet(input_size=5, hidden_size=64, num_classes=2)
     
     # Create optimizer and criterion
     optimizer = optim.Adam(model.parameters(), lr=0.001)
@@ -329,12 +329,12 @@ def manual_checkpoint_example() -> None:
     
     # Mock data
     dataset = create_s3_dataset(
-        s3_path="training-data/housing_prices.csv",
+        s3_path="housing_prices.csv",
         target_column="price_category",
         feature_columns=["bedrooms", "bathrooms", "sqft", "age", "location_score"]
     )
     train_loader = DataLoader(dataset, batch_size=32, shuffle=True)
-    model = SimpleNet(input_size=20, hidden_size=64, num_classes=2)
+    model = SimpleNet(input_size=5, hidden_size=64, num_classes=2)
     optimizer = optim.Adam(model.parameters(), lr=0.001)
     criterion = nn.CrossEntropyLoss()
     
