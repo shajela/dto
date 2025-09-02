@@ -19,27 +19,6 @@ from sklearn.datasets import make_classification
 from simple_net import SimpleNet
 from dto import DistributedTrainer, create_s3_dataset
 
-
-def create_synthetic_data() -> TensorDataset:
-    """Create the same synthetic data as in your original script"""
-    input_size = 20
-    num_classes = 2
-    
-    X, y = make_classification(
-        n_samples=1000,
-        n_features=input_size,
-        n_classes=num_classes,
-        n_redundant=0,
-        n_informative=input_size,
-        random_state=42
-    )
-    
-    X_tensor = torch.FloatTensor(X)
-    y_tensor = torch.LongTensor(y)
-    
-    return TensorDataset(X_tensor, y_tensor)
-
-
 def main_simple(arn: str) -> None:
     """
     Simple usage - let the framework handle everything with default training loop
@@ -73,7 +52,7 @@ def main_simple(arn: str) -> None:
         train_loader=train_loader,
         optimizer=optimizer,
         criterion=criterion,
-        num_epochs=50
+        num_epochs=200
     )
     
     if trainer.is_master():
